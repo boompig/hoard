@@ -1,0 +1,393 @@
+\documentclass[a4paper, 12pt]{article}
+\usepackage{graphicx}
+\usepackage{epstopdf}
+\usepackage{float}
+\usepackage{listings}
+\usepackage[toc,page]{appendix}
+
+\begin{document}
+\begin{titlepage}
+\title{CSC469 Assignment 1}
+\author{Kats, Daniel \and Hong, Tony}
+\clearpage
+\maketitle
+\thispagestyle{empty}
+\end{titlepage}
+
+\section{Introduction}
+
+In this assignment, we explored a variety of techniques to gather data related to CPU and memory performance on Linux. Part A primarily focuses on exploring OS-scheduled interrupts using the cycle counter register, whereas Part B emphasises the performance of NUMA architecture.
+
+\section{Part A1}
+
+The purpose of this experiment is to explore the timer interrupt performance of a Linux 3.13 system. In particular, we are interested in how this affects the performance of the process by measuring the amount of time that the process is inactive.
+
+\subsection{A1 Design}
+To check whether a process was interrupted, cycle counter register is queried using inline x86 assembly. If more than the 'usual' number of cycles have elapsed since the last measurement, it is deemed that the process has been inactive. The C program associated with this experiment takes as input the number of inactive periods to record, and outputs intervals and durations of active and inactive periods.
+
+There were two challenges in the implementation:
+\begin{enumerate}
+\item   Finding 'threshold' for differences in the cycle counter between measurements. The goal is for all the interrupts to take longer than this threshold, and all non-interrupt operations to be shorter (namely the measurement and loop code execution).
+\item   Calculating the clock rate, to output the duration of each active and inactive period in real-world time
+\end{enumerate}
+
+Once all of these variables were addressed, we implemented a tool which recorded the inactivity period for the process.
+
+\subsubsection{Finding the Threshold}
+
+A C program was run over a large number of iterations which outputted the differences in cycle counter values between subsequent measurements. We theorised that when interrupts occurred, there would be a big difference between measurements, which would stand out among the small measurement differences normally observed. These measurements were plotted in a line graph over the number of iterations, and the threshold was found by inspection. We could then draw a line which would separate the (we hoped) smaller spikes due to memory access, from the interrupt-related spikes. 
+
+In the complete A1 program, this threshold-finding code is run as a subroutine, by applying the same heuristic which we found by inspection.
+
+\subsubsection{Calculating the Clockrate}
+
+Second, we needed to determine CPU clockrate of the system to allow us to convert cycles to millisecond. We addressed this by taking 21 samples (a small odd number) of the cycle measurement with sleep on 0.25 seconds, and used the median from those samples to determine the correct clock rate for the system. The C nanosleep call was used, as it returns -1 when it is interrupted before it finishes. The program did not count any measurements which were caused by an interrupt, and reran nanosleep until a good value was found.
+
+\subsection{A1 Questions}
+\begin{enumerate}
+\item   With what frequency do timer interrupts occur?
+\item   How long does it take to handle a timer interrupt?
+\item   What are the non-timer interrupts?
+\item   What percentage of time is spent servicing interrupts?
+\end{enumerate}
+
+\subsection{A1 Hypothesis}
+
+We hypothesise the following:
+
+\begin{enumerate}
+\item   Our clockrate-measuring code would be very accurate, with respect to the manufacturer-reported clock speed
+\item   The time for an interrupt to occur is dramatically different from normal code operations
+\item   The CPU timer interrupts occur in a regular pattern
+\end{enumerate}
+
+
+\subsection{A1 Results}
+
+\subsubsection{Observing Threshold}
+Using the methodology described above, we obtained the graph below (and many others like it). As can be seen, there are large spikes, occuring at regular intervals, which seem like timer interrupts to us. They are discernible from the surrounding data as being 40 times, or even more, lengthy. We set the threshold as 36x the median value, to be sure. It is super-imposed on the graph below.
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/context_switch/threshold_fig64_n_2000.png}
+\end{figure}
+
+\subsubsection{Calculating Clockrate}
+
+Repeatedly running experiments the subroutine which calculates clockrate gave us a mean value of 2694.73 MHz, with a deviation of $< 1$ MHz over 20 measurements. The manufacturer-reported clockrate is 2.7 GHz, which means we achieved a better than 99.8\% accuracy.
+
+\subsubsection{Active and Inactive Periods}
+
+Below is a diagram showing active and inactive periods, catching 20 and 100 inactive periods, respectively. The \textbf{black} lines are inactive periods, and the \textbf{blue} are the active periods.
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.2\textwidth]{../data/active_periods_raw/periods_fig50_n_20.eps}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.2\textwidth]{../data/active_periods_raw/periods_fig48_n_100.eps}
+\end{figure}
+
+\subsubsection{Timer Interrupt Frequency}
+
+Based on the same data as used above, we have determined the timer interrupt frequency by looking at the length of the active periods.
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/active_periods_raw/data_fig48_n_100.png}
+\end{figure}
+
+We suspect the dip in this graph is due to other interrupts - we suspect IO interrupts.
+
+\subsection{A1 Analysis (AKA Answers)}
+
+In this section, we attempt to answer the questions that were posed.
+
+\begin{enumerate}
+\item   The interrupts seem to occur regularly, and with frequency of about 4 ms. We get a mean time of 3.997 ms over 100 inactive periods.
+\item   It takes 2-5 nanoseconds (0.000002-0.000005 ms) to handle a single timer interrupt. This is on the order of 2000-10000 CPU cycles.
+\item   We suspect that the non-timer interrupts are IO interrupts for other work being done on the computer. For example, it might be in reponse to mouse movement being detected.
+\item   The fraction of time spent handling interrupts is approximately 0.094\% of the total runtime of the program (over inactive periods).
+\end{enumerate}
+
+\section{Part A2}
+
+The purpose of this experiment is to explore the context switch performance of a Linux 3.13 system.
+
+\subsection{A2 Design}
+
+To measure the context switch performance, two processes were scheduled to run concurrently on a lightly-loaded machine. Each process would measure its inactive periods using the methods in section A1, then the results would be compared. The time for the context switch is the difference in time from when process A was suspended, and process B was started (with a very small measurement error).
+
+There were two main issues in this experiment:
+\begin{enumerate}
+\item   Coordination between the measurements of the two processes - they needed to have the same frame of reference.
+\item   Determining what constitutes a context switch from process A to process B, versus a context switch from process A to a third process, C, then to process B.
+\end{enumerate}
+
+\subsubsection{Measurement Coordination}
+
+To make sure the same reference frame was used for both processes, process B was created to be a child of process A. The cycle measurement was started before the fork, so both processes began measuring from the same point. In addition to this, the forked process wrote its results into shared memory, so that after it exited, process A would have access to it.
+
+In addition to this, we set the process affinity for the parent and child to the same processor, so they would not be scheduled on separate cores.
+
+\subsubsection{Determining Context Switch Times}
+
+The context switch was found by recording the start of inactive periods for the parent, and comparing it with the start of active periods for the child. If the start of a inactive period for the parent was the closest event to the start of an active period for the child, then a context switch had occurred, and the time difference between the two events was recorded. This process was repeated for the entirety of the parent and child process, and the final estimate for the context switch was found by taking the median from the collection of context switch times.
+
+To investigate the length of time slice, junk processes were created, and pinned to the same core as the C program. The rest of the investigation is the same as above.
+
+\subsection{A2 Hypothesis}
+
+We hypothesised the following:
+
+\begin{itemize}
+\item   The parent and child process have a high degree of interleaving. The parent will be inactive when the child is active and vice-versa. There will be many such regions.
+\item   It will be easy to tell when a context-switch occurred or a timer-based switch occurred based on the relative activity of the two processes
+\item   The context switch time will be easily measured, and will be consistent over a large number of iterations
+\item	If there are more processes sunning simultaneously, then the time slice allocated to each process will be smaller.
+\end{itemize}
+
+\subsection{A2 Results}
+
+Based on the procedure described above, the following results were obtained. These diagrams were obtained by catching 50 periods of inactivity on both the parent and child process. The \textbf{red} regions are inactive periods, the \textbf{blue} regions are the active periods, and the \textbf{gray} regions are the undetermined periods. The undetermined periods are time intervals where no measurements could be recorded.
+
+The following are results that were obtained while running on a lightly-loaded system:
+\begin{figure}[H]
+	\centering
+		\includegraphics[scale=1.1]{normal_child.eps}
+\end{figure}
+\begin{figure}[H]
+	\centering
+		\includegraphics[scale=1.1]{normal_parent.eps}
+\end{figure}
+\begin{figure}[H]
+	\centering
+		\includegraphics[scale=1.1]{normal_merged.eps}
+\end{figure}
+
+The following are results that were obtained while running on a system with other processes running:
+\begin{figure}[H]
+	\centering
+		\includegraphics[width=1.0\textwidth]{cramped_child.eps}
+\end{figure}
+\begin{figure}[H]
+	\centering
+		\includegraphics[width=1.0\textwidth]{cramped_parent.eps}
+\end{figure}
+\begin{figure}[H]
+	\centering
+		\includegraphics[width=1.0\textwidth]{cramped_merged.eps}
+\end{figure}
+
+\subsection{A2 Analysis}
+From the investigation, the context switch time of the lightly loaded system was found to be 1.9 microseconds (0.0019 ms).
+
+The time slice of a process on the lightly loaded system was found to be approximately three timer-interrupt intervals, as seen in the first set of graphs. When the system was loaded, this value decreased to one timer-interrupt interval, as seen in the second set of graphs. An interesting point to note is that in the merged graph from the second part of the experiment, there are still periods of inactivity, this shows that the CPU was being allocated to the other processes that were running in the background.
+
+We observed tight interleaving of the parent and child processes on the lightly loaded system, consistent with our hypothesis.
+
+The findings from this experiment was consistent with our understanding of operating systems. It demonstrates the efforts to optimize system performance by reducing the context switch overhead on lightly loaded systems, and attempts to imitate true concurrency on busy systems.
+
+\section{Part B}
+The purpose of this experiment is to explore the effects of the hardware memory organization on application performance. The measurement of interest in this section is the Non-Uniform Memory Access (NUMA) time - namely, how long it takes a processor on a certain node to perform calculations on data stored on a different node, versus the same node.
+
+\subsection{B Design}
+John McCalpin's memory performance benchmark "Stream" was used to measure the NUMA performance on the following operations: Copy, Scale, Add, and Triad. The memory node was fixed, and the physical CPU was changed through the experiment to see the difference between "local" and "non-local" access. The benchmark was run 10 times on each pair of (memory node, physical cpu).
+
+The memory throughput in Mbps was measured using this benchmark.
+
+The memory node location was varied between experiments to look for memory outliers.
+
+\subsection{B Hypothesis}
+
+We have the following hypotheses:
+
+\begin{itemize}
+\item	Accessing memory on the same node as the CPU should be faster than accessing memory on a different node
+\item   CPUs on the same node should perform roughly the same
+\item   non-local CPUs should perform roughly the same
+\item   The performance should be approximately the same across the 4 benchmark operations
+\end{itemize}
+
+\subsection{B Results}
+
+The following are results for running the benchmark 10 times per physical CPU, per memory node. The mean was used for each CPU, and the error bars are the standard deviation. The graphs show the Triad command. The colors of the bars correspond to the nodes on which the CPUs are.
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/numa/attempt_2/exp_11_fig_Triad_best_mbs.png}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/numa/attempt_2/exp_12_fig_Triad_best_mbs.png}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/numa/attempt_2/exp_13_fig_Triad_best_mbs.png}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/numa/attempt_2/exp_14_fig_Triad_best_mbs.png}
+\end{figure}
+
+Here are results for memory on node 6 (as an example) for the other commands:
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/numa/attempt_2/exp_14_fig_Copy_best_mbs.png}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/numa/attempt_2/exp_14_fig_Scale_best_mbs.png}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+        \includegraphics[width=1.3\textwidth]{../data/numa/attempt_2/exp_14_fig_Add_best_mbs.png}
+\end{figure}
+
+Here are the category averages for each CPU node, for memory on node 6.
+
+\begin{table}[H]
+\begin{center}
+\begin{tabular}{| l | r |}
+\hline
+CPU Node & Triad Median \\
+\hline
+0 & 2418.36 \\
+\hline
+2 & 2422.51 \\
+\hline
+4 & 2564.17 \\
+\hline
+6 & 5435.41 \\
+\hline
+\end{tabular}
+\end{center}
+
+\caption{Triad benchmark median values}
+\label{node2:triad:table}
+\end{table}
+
+\subsection{B Analysis}
+
+As can be seen from the data above, a distinct NUMA effect can be observed. It is most pronounced on nodes other than 0. On node 0, it can be seen that while some CPUs definitely exhibit NUMA behaviour, others actually do worse than non-local CPUs. We believe this is a combination of relative performance (We think the latter CPUs in each sequence of 12 have poorer performance than the first few), and of load.
+
+We believe that non-local distances are different from node to node, and moreover are non-symmetrical. Also, there is some variability within the same node between the CPUs; we believe the first 6 CPUs on each node are more powerful than the second 6.
+
+The performance is indeed extremely similar between the 4 commands of the benchmark.
+
+We now analyze the benchmark results for memory node 6.
+
+Using the values from table \ref{node2:triad:table}, we can partially fill in a distance table, for memory node 6 (taking local access as 10):
+
+\begin{table}[H]
+\begin{center}
+\begin{tabular}{| l | c | c | c | r |}
+\hline
+memory node / CPU node & 0 & 2 & 4 & 6 \\ \hline
+6 & 22.48 & 22.44 & 21.20 & 10 \\ \hline
+\end{tabular}
+\end{center}
+\caption{NUMA distance table}
+\end{table}
+
+The distance table provided by numactl is 
+\begin{table}[H]
+\begin{center}
+\begin{tabular}{| l | c | c | c | r |}
+\hline
+node &  0  & 2   & 4   & 6 \\\hline
+  0 &  10  & 16  & 16  & 16 \\\hline
+  2 &  16  & 10  & 16  & 16 \\\hline
+  4 &  16  & 16  & 10  & 16 \\\hline
+  6 &  16  & 16  & 16  & 10 \\ \hline
+  \end{tabular}
+  \end{center}
+\caption{numactl distance table}
+\end{table}
+
+However, as was explained in lecture, this distance table is just meant to show whether there is a NUMA architecture present or no, and not actually be a metric for distance.
+
+\begin{appendices}
+\section{Parameters of the System}
+
+We ran part A on a CDF lab computer with hostname b2220-07. The CPU was Intel(R) Pentium(R) CPU G630 @ 2.70GHz with a cache size of 3072 KB. The total memory on the computer was 8023420 KB (approx. 8 GB).
+
+We ran part B on wolf.cdf, which has a NUMA architecture with 48 physical CPUs located on 4 cores. The processors are AMD Opteron(tm) Processor 6348 with cache size 2048 KB. The total memory on the computer was 65954328 KB (approx. 66 GB).
+
+\section{Running Part A1}
+
+The results in Part A1 can be reproduced using this command:
+
+\begin{lstlisting}
+$ ./partA1_driver.py -n <number_of_inactive_periods>
+\end{lstlisting}
+
+This pegs the CPU to a single core, and runs the C-program for part A1. This C program calculates the clockrate and the threshold, and outputs these. It then outputs alternating active and inactive periods.
+
+The Python script interprets these results, and produces:
+
+\begin{enumerate}
+\item	A .dat file, which is the raw output of the C program
+\item	A .eps file, which is the active/inactive plot
+\item	A graph of the frequency of timer interrupts
+\end{enumerate}
+
+It outputs to the console:
+
+\begin{enumerate}
+\item	The calculated clockrate
+\item	The fraction of total time used to handle interrupts
+\item	The median frequency of timer interrupts
+\item	Location of all created plots
+\end{enumerate}
+
+\subsection{Getting the Threshold Graph}
+
+Peg the CPU to a single core and just find the threshold. Output it, together with the length of periods, inactive or no. Graph them and save the figure. To run:
+
+\begin{lstlisting}
+$ ./partA1_driver.py -n <number_of_inactive_periods>
+\end{lstlisting}
+
+A good number to put is 1000.
+
+\section{Running Part A2}
+
+The results in Part A2 can be reproduced using this command:
+
+\begin{lstlisting}
+$ ./partA2_driver.py
+\end{lstlisting}
+
+This command will generate parent and child inactivity graphs, as well as the merged graph of their activity, as EPS files. It will output the context switch time and the calculated clockrate.
+
+\subsection{Reproducing Results for Busy Load}
+
+The part A1 command was run with a very high n, and then the part A2 command was launched simultaneously.
+
+\section{Running Part B}
+
+To reproduce results for part B, run this command:
+
+\begin{lstlisting}
+$ ./partB_driver.py -n <number_of_trials_per_benchmark> --mem <memory_node>
+\end{lstlisting}
+
+This file will produce:
+
+\begin{enumerate}
+\item	4 bar graphs, one per benchmark command, where each bar corresponds to a physical CPU
+\item	The raw output numbers of the benchmark, in a plain-text file
+\end{enumerate}
+
+And it will output the average memory throughput in Mbps per command per CPU node.
+\end{appendices}
+\end{document}

@@ -1,0 +1,35 @@
+# Implementation Notes
+
+Here is a description of the allocator, as it currently stands.
+
+## Data Structures
+
+### sb_freelist
+
+* global linked list of reclaimed superblocks (actually pointers to superblocks)
+
+### sb_vector
+
+* global linked list of superblocks, in order of addresses
+* used for mapping of address to superblock, for use by mm_free
+* there is a pointer to the beginning and to the end of this linked list for easy appending and iterating
+
+### sb_map
+
+* mapping of segment sizes to a linked list of superblocks which have that segment size
+* implemented as array, where indices are power-of-2 exponents, with an offset
+* for example sb_map[0] contains all superblocks with segment size 16 (MIN_SEG_SIZE)
+* sb_map[1] has superblocks with seg size 32, sb_map[2] -> 64, etc.
+
+## Inefficiencies
+
+* superblock size is SB_PAGE_MULTIPLE * PAGE_SIZE, but SB_PAGE_MULTIPLE = 2, may not be optimal
+* I guess PAGE_SIZE; we should actually determine what it is
+* MIN_SEG_SIZE should be the cache line size, currently set at 16
+
+## Future Improvements
+
+* sb_vector would not be needed if the superblock data were stored at the beginning of the superblock
+* don't need to clear superblock's freelist if the new segsize = old segsize
+* maintain reclaimed bool in start address's higher bits using bitmask
+* don't need to maintain seg size for the superblock's freelist nodes in their struct

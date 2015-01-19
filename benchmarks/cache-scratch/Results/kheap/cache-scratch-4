@@ -1,0 +1,4 @@
+
+cache-scratch-kheap: kheap.c:322: subpage_kmalloc: Assertion `fla - prpage < 4096' failed.
+Got freq of 2800.257184 MHz
+Aborted (core dumped)

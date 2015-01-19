@@ -1,0 +1,4 @@
+
+threadtest-kheap: kheap.c:322: subpage_kmalloc: Assertion `fla - prpage < 4096' failed.
+Running threadtest for 6 threads, 1000 iterations, 420 objects, 10 work and 1 size...
+Aborted (core dumped)
