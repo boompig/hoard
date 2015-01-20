@@ -4,4 +4,4 @@ This is a scalable, parallel memory allocator. It is based on the original Hoard
 
 # Authors
 
-Daniel Kats and Hong Xu
+Daniel Kats and Tony Hong
